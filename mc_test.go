@@ -1,17 +1,13 @@
 package memcache_test
 
 import (
-	"github.com/lysu/gomemcache/memcache"
-	"github.com/lysu/memcache"
+	"github.com/faildep/faildep-memcache"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/context"
 	"testing"
 	"time"
 )
 
 func TestMC(t *testing.T) {
-
-	ctx := context.TODO()
 
 	assert := assert.New(t)
 
@@ -27,15 +23,15 @@ func TestMC(t *testing.T) {
 	assert.NoError(err)
 	assert.Equal("abc", v)
 
-	mc2, err := memcached.NewMemcached([]string{"0.0.0.0:11211"}, 2, 40*time.Millisecond)
+	mc2, err := memcache.NewMemcached([]string{"0.0.0.0:11211"}, 2, 40*time.Millisecond)
 	assert.NoError(err)
-	v2, err := mc2.Get(ctx, "u1")
+	v2, err := mc2.Get("u1")
 	assert.NoError(err)
 	assert.Equal("abc", v2)
 
-	mc3, err := memcached.NewMemcached([]string{"10.10.10.114:11211"}, 2, 40*time.Millisecond)
+	mc3, err := memcache.NewMemcached([]string{"10.10.10.114:11211"}, 2, 40*time.Millisecond)
 	assert.NoError(err)
-	v3, err := mc3.Get(ctx, "u1")
+	v3, err := mc3.Get("u1")
 	assert.NoError(err)
 	assert.Equal("abc", v3)
 

@@ -4,8 +4,8 @@ package memcache
 
 import (
 	"fmt"
+	"github.com/faildep/faildep"
 	"github.com/lysu/gomemcache/memcache"
-	"github.com/lysu/slb"
 	"golang.org/x/net/context"
 	"log"
 	"strconv"
@@ -34,8 +34,8 @@ var (
 
 // Memcached presents simple fault tolerance memcached client.
 type Memcached struct {
-	pool *mcPool
-	lb   *slb.LoadBalancer
+	pool    *mcPool
+	faildep *faildep.FailDep
 }
 
 type mcConf struct {
@@ -43,12 +43,12 @@ type mcConf struct {
 	successiveFailThreshold uint
 	trippedBaseTime         time.Duration
 	trippedTimeMax          time.Duration
-	trippedBackOff          slb.BackOff
+	trippedBackOff          faildep.BackOff
 	retryMaxServerPick      uint
 	retryMaxRetryPerServer  uint
 	retryBaseInterval       time.Duration
 	retryMaxInterval        time.Duration
-	retryBackOff            slb.BackOff
+	retryBackOff            faildep.BackOff
 	rwTimeout               time.Duration
 }
 
@@ -88,12 +88,12 @@ func NewMemcached(servers []string, maxIdlePerHost int, rwTimeout time.Duration,
 		successiveFailThreshold: DefaultSuccessiveFailThreshold,
 		trippedBaseTime:         DefaultTrippedBaseTime,
 		trippedTimeMax:          DefaultTrippedTimeMax,
-		trippedBackOff:          slb.Exponential,
+		trippedBackOff:          faildep.Exponential,
 		retryMaxServerPick:      DefaultRetryMaxServerPick,
 		retryMaxRetryPerServer:  DefaultRetryMaxRetryPerServer,
 		retryBaseInterval:       DefaultRetryBaseInterval,
 		retryMaxInterval:        DefaultRetryMaxInterval,
-		retryBackOff:            slb.DecorrelatedJittered,
+		retryBackOff:            faildep.DecorrelatedJittered,
 		rwTimeout:               rwTimeout,
 	}
 	for _, opt := range opts {
@@ -105,9 +105,9 @@ func NewMemcached(servers []string, maxIdlePerHost int, rwTimeout time.Duration,
 	}
 	return &Memcached{
 		pool: pool,
-		lb: slb.NewLoadBalancer(servers,
-			slb.WithCircuitBreaker(conf.successiveFailThreshold, conf.trippedBaseTime, conf.trippedTimeMax, conf.trippedBackOff),
-			slb.WithRetry(conf.retryMaxServerPick, conf.retryMaxRetryPerServer, conf.retryBaseInterval, conf.retryMaxInterval, conf.retryBackOff),
+		faildep: faildep.NewFailDep(servers,
+			faildep.WithCircuitBreaker(conf.successiveFailThreshold, conf.trippedBaseTime, conf.trippedTimeMax, conf.trippedBackOff),
+			faildep.WithRetry(conf.retryMaxServerPick, conf.retryMaxRetryPerServer, conf.retryBaseInterval, conf.retryMaxInterval, conf.retryBackOff),
 		),
 	}, nil
 }
@@ -115,21 +115,21 @@ func NewMemcached(servers []string, maxIdlePerHost int, rwTimeout time.Duration,
 // Set writes the given item, unconditionally.
 func (mc *Memcached) Set(key string, value interface{}, expire int32) error {
 	start := time.Now()
-	err := mc.lb.Submit(func(node *slb.Node) error {
+	err := mc.faildep.Do(func(res *faildep.Resource) error {
 		item, err := encodeMemcacheItem(value)
 		if err != nil {
-			log.Printf("[MC] Encode item Server: %s ERROR: %v", node.Server, err)
+			log.Printf("[MC] Encode item Server: %s ERROR: %v", res.Server, err)
 			return err
 		}
 		item.Key = key
 		item.Expiration = expire
-		client, err := mc.pool.get(node.Server)
+		client, err := mc.pool.get(res.Server)
 		if err != nil {
 			return err
 		}
 		err = client.Set(item)
 		if err != nil {
-			log.Printf("[MC] Set %s %v Server: %s ERORR: %v", key, value, node.Server, err)
+			log.Printf("[MC] Set %s %v Server: %s ERORR: %v", key, value, res.Server, err)
 		}
 		return err
 	})
@@ -145,16 +145,16 @@ func (mc *Memcached) Set(key string, value interface{}, expire int32) error {
 func (mc *Memcached) Get(key string) (interface{}, error) {
 	start := time.Now()
 	var result interface{}
-	err := mc.lb.Submit(func(node *slb.Node) error {
-		client, err := mc.pool.get(node.Server)
+	err := mc.faildep.Do(func(res *faildep.Resource) error {
+		client, err := mc.pool.get(res.Server)
 		if err != nil {
-			log.Printf("[MC] Get conn Server: %s ERROR: %v", node.Server, err)
+			log.Printf("[MC] Get conn Server: %s ERROR: %v", res.Server, err)
 			return err
 		}
 		item, err := client.Get(key)
 		if err != nil {
 			if err != memcache.ErrCacheMiss {
-				log.Printf("[MC] Get %v Server: %s ERORR: %v", key, node.Server, err)
+				log.Printf("[MC] Get %v Server: %s ERORR: %v", key, res.Server, err)
 			}
 			return err
 		}
@@ -182,15 +182,15 @@ func (mc *Memcached) Get(key string) (interface{}, error) {
 func (mc *Memcached) GetMulti(keys []string) (map[string]interface{}, error) {
 	start := time.Now()
 	result := make(map[string]interface{}, len(keys))
-	err := mc.lb.Submit(func(node *slb.Node) error {
-		client, err := mc.pool.get(node.Server)
+	err := mc.faildep.Do(func(res *faildep.Resource) error {
+		client, err := mc.pool.get(res.Server)
 		if err != nil {
-			log.Printf("[MC] Get conn Server: %s ERROR: %v", node.Server, err)
+			log.Printf("[MC] Get conn Server: %s ERROR: %v", res.Server, err)
 			return err
 		}
 		items, err := client.GetMulti(keys)
 		if err != nil {
-			log.Printf("[MC] GetMulti %v Server: %s ERORR: %v", keys, node.Server, err)
+			log.Printf("[MC] GetMulti %v Server: %s ERORR: %v", keys, res.Server, err)
 			return err
 		}
 		for key, item := range items {
@@ -216,15 +216,15 @@ func (mc *Memcached) GetMulti(keys []string) (map[string]interface{}, error) {
 // returned if the item didn't already exist in the cache.
 func (mc *Memcached) Delete(key string) error {
 	start := time.Now()
-	err := mc.lb.Submit(func(node *slb.Node) error {
-		client, err := mc.pool.get(node.Server)
+	err := mc.faildep.Do(func(res *faildep.Resource) error {
+		client, err := mc.pool.get(res.Server)
 		if err != nil {
-			log.Printf("[MC] Get conn Server: %s ERROR: %v", node.Server, err)
+			log.Printf("[MC] Get conn Server: %s ERROR: %v", res.Server, err)
 			return err
 		}
 		err = client.Delete(key)
 		if err != nil && err != memcache.ErrCacheMiss {
-			log.Printf("[MC] Delete %s Server: %s ERORR: %v", key, node.Server, err)
+			log.Printf("[MC] Delete %s Server: %s ERORR: %v", key, res.Server, err)
 		}
 		return err
 	})
@@ -239,16 +239,16 @@ func (mc *Memcached) Delete(key string) error {
 // key. ErrNotStored is returned if that condition is not met.
 func (mc *Memcached) Add(ctx context.Context, key string, value interface{}, expire int32) error {
 	start := time.Now()
-	err := mc.lb.Submit(func(node *slb.Node) error {
-		client, err := mc.pool.get(node.Server)
+	err := mc.faildep.Do(func(res *faildep.Resource) error {
+		client, err := mc.pool.get(res.Server)
 		if err != nil {
-			log.Printf("[MC] Get conn Server: %s ERROR: %v", node.Server, err)
+			log.Printf("[MC] Get conn Server: %s ERROR: %v", res.Server, err)
 			return err
 		}
 		item, err := encodeMemcacheItem(value)
 		if err != nil {
 			if err != memcache.ErrNotStored {
-				log.Printf("[MC] Encode item Server: %s ERROR: %v", node.Server, err)
+				log.Printf("[MC] Encode item Server: %s ERROR: %v", res.Server, err)
 			}
 			return err
 		}
@@ -256,7 +256,7 @@ func (mc *Memcached) Add(ctx context.Context, key string, value interface{}, exp
 		item.Expiration = expire
 		err = client.Add(item)
 		if err != nil {
-			log.Printf("[MC] Add %s %v Server: %s ERORR: %v", key, value, node.Server, err)
+			log.Printf("[MC] Add %s %v Server: %s ERORR: %v", key, value, res.Server, err)
 		}
 		return err
 
@@ -276,16 +276,16 @@ func (mc *Memcached) Add(ctx context.Context, key string, value interface{}, exp
 func (mc *Memcached) Increment(key string, delta uint64) (uint64, error) {
 	start := time.Now()
 	var result uint64
-	err := mc.lb.Submit(func(node *slb.Node) error {
-		client, err := mc.pool.get(node.Server)
+	err := mc.faildep.Do(func(res *faildep.Resource) error {
+		client, err := mc.pool.get(res.Server)
 		if err != nil {
-			log.Printf("[MC] Get conn Server: %s ERROR: %v", node.Server, err)
+			log.Printf("[MC] Get conn Server: %s ERROR: %v", res.Server, err)
 			return err
 		}
 		value, err := client.Increment(key, delta)
 		if err != nil {
 			if err != memcache.ErrCacheMiss {
-				log.Printf("[MC] Increment %s %d Server: %s ERORR: %v", key, delta, node.Server, err)
+				log.Printf("[MC] Increment %s %d Server: %s ERORR: %v", key, delta, res.Server, err)
 			}
 			return err
 		}

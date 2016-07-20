@@ -1,3 +1,3 @@
-# memcache
+# faildep-memcache
 
-memcache client with Load balancing & Fault tolerance & ConnectionPool support
+Implements memcached client with Resiliency Patterns.
